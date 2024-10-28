@@ -1,0 +1,313 @@
+#!/bin/bash
+
+# SAH - Simple Aur Helper
+
+# Default build directory
+typeset -r builddir="${SAH_BUILDDIR:-$HOME/.cache/sah/builds}"
+
+# AUR http address
+typeset -r auraddr='https://aur.archlinux.org'
+
+typeset auronly noconf noview
+
+SLA="Operations:
+-i - Install packages.
+-u - Update packages.
+-s - Search for packages.
+-v - Prints the current version.
+
+Options:
+-a - Only perform operations on AUR packages.
+-n - Skip viewing PKGBUILD files when installing from the AUR.
+-N - Skip confirmation prompts, also passed to pacman and makepkg."
+
+VERSION="0.1"
+
+# show the manpage or version.
+use()
+{ 
+    { [[ $1 == 'v' ]] && printf "sah - Simple AUR Helper version %s\n" "$VERSION"; } || printf "%b\n" "$SLA" 
+}
+
+# print colour $1 :: then message $2 in bold, usage: msg color text
+msg()
+{   
+    { [[ $1 ]] && printf "\e[1m%b::\e[0m \e[1m%b\e[0m\n" "$1" "$2"; } || printf "%b\n" "$2"
+}
+
+# print string $1 and exit with error code $2, usage: die "text" exitcode
+die()
+{   
+    printf "\e[1;31merror:\e[0m %b\n" "$1" >&2
+    exit "${2:-1}"
+}
+
+# install an AUR package.. usage: get package
+get()
+{   
+    rm -rf "${builddir:?}/$1"
+    cd "$builddir" || die "failed to cd to build dir $builddir"
+
+    if hash git >/dev/null 2>&1; then
+        msg '\e[34m' "Cloning \e[32m$1\e[0m\e[1m package repo..."
+        git clone "$auraddr/$1" || die "failed to clone package repo: $auraddr/$1"
+    else
+        msg '\e[34m' "Retrieving package archive: $1"
+        rm -rf "${builddir:?}/$1*"
+        curl -LO#m 30 --connect-timeout 10 "$auraddr/cgit/aur.git/snapshot/$1.tar.gz" || die "failed to download package: $1"
+        if [[ -e "$1.tar.gz" ]] && tar -xvf "$1.tar.gz"; then
+            rm -f "${builddir:?}/$1.tar.gz"
+        else
+            die "failed to extract package or not a tar.gz archive: $1"
+        fi
+    fi
+
+    if [[ -r "$builddir/$1/PKGBUILD" ]]; then
+        view "$1" || yesno "Continue building $1" || { rm -rf "${builddir:?}/$1"; return 1; }
+        build "$1" || return 1
+    else
+        die "$builddir/$1 does not contain a PKGBUILD or it is not accessible"
+    fi
+    return 0
+}
+
+# view the given PKGBUILD if noview is unset.. usage: view package
+view()
+{ 
+    if [[ -z $noview ]] && yesno "View/Edit the PKGBUILD for $1"; then
+        ${EDITOR:-vi} "$builddir/$1/PKGBUILD"
+        cd "$builddir/$1" && makepkg --printsrcinfo > .SRCINFO
+        return 1
+    fi
+    return 0
+}
+
+# import PGP keys from package.. usage: keys key1 key2 ...
+keys()
+{   
+    for k; do
+        k="${k// /}"
+        pacman-key --list-keys | grep -q "$k" && continue
+        msg '\e[33m' "Resolving missing pgp key for $pkg: $k"
+        if ! escalate pacman-key --recv-keys "$k" || ! escalate pacman-key --finger "$k" || ! escalate pacman-key --lsign-key "$k"; then
+            msg '\e[33m' "Failed to import pgp key, continuing anyway"
+        fi
+    done
+}
+
+ # build package depends.. usage: deps dep1 dep2 ...
+deps()
+{   
+    for d; do
+        d="$(sed 's/[=<>]=\?[0-9.\-]*.*//g' <<< "$d")"
+        if ! pacman -Qsq "^$d$" >/dev/null 2>&1 && ! pacman -Ssq "^$d$" >/dev/null 2>&1; then
+            msg '\e[33m' "Resolving \e[32m$pkg\e[0m\e[1m AUR dependency: $d"
+            get "$d" || die "failed to build dependency $d"
+        fi
+    done
+}
+
+# ask confirmation if noconf is not set, usage: yesno question
+yesno()
+{   
+    [[ $noconf ]] && return 0
+    read -re -p $'\e[34m::\e[0m \e[1m'"$1"$'? [Y/n]\e[0m ' c && [[ -z $c || $c == 'y' || $c == 'Y' ]]
+}
+
+# build package $1.. usage: build package
+build()
+{   
+    typeset -ga depends=() makedepends=() validpgpkeys=()
+
+    cd "$builddir/$1" || die "failed to cd $builddir/$1"
+    [[ -e '.SRCINFO' ]] || makepkg --printsrcinfo > .SRCINFO
+    eval "$(sed 's/\s*//' .SRCINFO | grep '^depends\|^makedepends\|^validpgpkeys' | sed 's/ = \(.*\)/+=("\1")/')"
+    keys "${validpgpkeys[@]}"
+    deps "${depends[@]}" "${makedepends[@]}"
+    cd "$builddir/$1" || die "failed to cd $builddir/$1"
+    makepkg -sicr "$noconf" || return 1
+    rm -rf ./*.tar.* >/dev/null 2>&1 || return 0 # */
+}
+
+# search the AUR for queries, usage: search query1 query2 ...
+search()
+{   
+    typeset r
+
+    for q; do
+        msg '\e[34m' "Searching AUR for '$q'...\n"
+        r="$(curl -sLm 30 --connect-timeout 10 "$auraddr/rpc/v5/search/$q" 2>/dev/null)"
+
+        if [[ -z $r || $r == *'"resultcount":0'* ]]; then
+            printf "\e[1;31m:: \e[0mno results found for '%s'\n" "$q"
+        else
+            echo -e "$(sed 's/[]{},]/\n/g' <<< "$r" |
+                awk 'BEGIN{s = ""; i = 0}
+                    /^"Name":/ { i++; gsub(/^"Name":|"/, ""); printf("\\e[1;33m%d \\e[1;37m%s ", i, $0); }
+                    /^"Version":/ { gsub(/^"Version":|"/, ""); printf("\\e[1;32m%s ", $0); }
+                    /^"Description":/ { gsub(/^"Description":|"/, ""); s = $0 }
+                    /^"OutOfDate":/ { if ($0 !~ "null") { printf("\\e[1;31m(Out of Date!) "); } }
+                    /^$/ { if (s) { printf("\n\\e[0m    %s\n", s); s = "" } }'
+                    )"
+        fi
+    done
+}
+
+# check updates for passed AUR packages or all when none specified
+update()
+{   
+    typeset -i i
+    typeset -a up=()
+    typeset -A old new
+    typeset p='' s=''
+
+    # don't ask to view PKGBUILD for already installed AUR packages
+    noview='--noview'
+
+    if (( ${#aurpkgs[@]} == 0 )); then
+        mapfile -t aurpkgs < <(pacman -Qqm 2>/dev/null)
+        [[ $auronly ]] || escalate pacman -Syyu "$noconf"
+    fi
+
+    if (( ${#aurpkgs[@]} == 0 )); then
+        if [[ $auronly ]]; then
+            msg '\e[34m' "No AUR packages installed.."
+        fi
+    else
+        printf "\e[1m\e[34m::\e[0m \e[1mSynchronizing AUR package versions...\e[0m\r"
+        (
+            s="${aurpkgs[*]}"
+            pacman -Q "${aurpkgs[@]}" | awk '{print "old["$1"]="$2}' > /tmp/oldver
+            curl -sLZm 30 --connect-timeout 10 "$auraddr/rpc/v5/info?arg[]=${s// /\&arg[]=}" 2>/dev/null |
+                sed 's/[]{},]/\n/g' | awk '/^"Name":/ { gsub(/^"Name":|"/, ""); printf("new[%s]=", $0); }
+                            /^"Version":/ { gsub(/^"Version":|"/, ""); printf("%s\n", $0); }' > /tmp/newver
+        ) &
+        pid=$!
+        trap "kill $pid 2> /dev/null" EXIT
+
+        # print loading dots while we wait for curl
+        i=0
+        while [[ $pid ]] && kill -0 $pid 2> /dev/null; do
+            if (( ++i + 40 <= $(tput cols) )); then
+                s="$(printf "%${i}s")"
+                printf "\e[1m\e[34m::\e[0m \e[1mSynchronizing AUR package versions %s \e[0m\r" "${s// /.}"
+            fi
+            sleep 0.5
+        done
+        printf "\n"
+        unset pid
+
+        eval "$(cat /tmp/oldver /tmp/newver)" 
+
+        i=0
+        for p in "${aurpkgs[@]}"; do
+            if [[ ${new[$p]} && ${old[$p]} && ${new[$p]} != "${old[$p]}" && $(vercmp "${new[$p]}" "${old[$p]}") -gt 0 ]]; then
+                up+=("$p")
+                prnt+="${p}\e[2m-${new[$p]}\e[0m "
+                (( i++ ))
+            fi
+        done
+
+        if (( i )); then
+            msg '\e[34m' "Starting AUR package upgrade..."
+            printf "\n\e[1mPackages (%s)\e[0m %b\n\n" "$i" "$prnt"
+            if yesno "Proceed with package upgrade"; then
+                for pkg in "${up[@]}"; do
+                    get "$pkg"
+                done
+            fi
+        else
+            msg '' ' there is nothing to do'
+        fi
+    fi
+
+    return 0
+}
+
+# loop over input packages and install each
+install()
+{   
+    if (( ${#auronly} && ! ${#aurpkgs[@]} )); then
+        if (( ${#pacpkgs[@]} )); then
+            die "targets given are official packages (no -a/--auronly)"
+        else
+            die "no targets specified for install"
+        fi
+    elif (( ! ${#auronly} && ${#pacpkgs[@]} )); then
+        escalate pacman -Syyu "${pacpkgs[@]}" "$noconf" || exit 1
+    fi
+
+    for pkg in "${aurpkgs[@]}"; do
+        if curl -sLm 30 --connect-timeout 10 "$auraddr/rpc/v5/info?arg[]=$pkg" 2>/dev/null | grep -q '"resultcount":[1-9]\+'; then
+            get "$pkg" || msg '\e[33m' "Exited $pkg build early"
+        else
+            die "unable to find package '$pkg', is the name spelled correctly?"
+        fi
+    done
+}
+
+# escalate the privilege of the command passed in
+escalate()
+{   
+    if hash sudo >/dev/null 2>&1; then
+        sudo "$@"
+    elif hash doas >/dev/null 2>&1; then
+        doas "$@"
+    else
+        su -c "$*"
+    fi
+}
+
+main()
+{
+    typeset cmd
+    typeset -ga pacpkgs aurpkgs
+    typeset -A desc=(
+        [s]='search' [u]='update' [i]='install' 
+    )
+    typeset -A opts=(
+        [s]='cmd=search' [u]='cmd=update' [i]='cmd=install' 
+        [n]='noview=--noview' [N]='noconf=--noconfirm' [a]='auronly=--auronly'
+    )
+    while getopts ":hvuisandN" OPT; do
+        case "$OPT" in
+            h|v) use "$OPT"; exit 0 ;;
+            d)
+                export PS4='| ${BASH_SOURCE} LINE:${LINENO} FUNC:${FUNCNAME[0]:+ ${FUNCNAME[0]}()} |>  '
+                set -x
+                exec 3>| sah.dbg
+                BASH_XTRACEFD=3
+                ;;
+            n|N|a|s|u|i)
+                if [[ $OPT =~ (s|u|i) && $cmd == "${desc[$OPT]}" ]]; then
+                    die "'${desc[$OPT]}' does not support being passed multiple times"
+                elif [[ $OPT =~ (s|u|i) && $cmd && $cmd != "${desc[$OPT]}" ]]; then
+                    die "'${desc[${cmd:0:1}]}' and '${desc[$OPT]}' can't be used together"
+                fi
+                eval "${opts[$OPT]}"
+                ;;
+            \?) die "invalid option: '$OPTARG'" ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    [[ $cmd ]] || die "no operation specified (use -h for help)"
+    [[ $cmd =~ (update) || $# -gt 0 ]] || die "no targets specified for ${desc[${cmd:0:1}]}"
+
+    # remaining args are considered packages
+    for arg; do 
+        { pacman -Ssq "^$arg$" >/dev/null 2>&1 && pacpkgs+=("$arg"); } || aurpkgs+=("$arg")
+    done
+
+    $cmd "$@"
+}
+
+(( UID )) || die "do not run $0 as root"
+hash makepkg pacman >/dev/null 2>&1 || die "$0 only supports systems that use pacman as their package manager"
+hash su curl >/dev/null 2>&1 || die "$0 requires the following packages: su, curl\n\n\toptional packages: git sudo doas"
+[[ -e "$builddir" && ! -d "$builddir" ]] && die "build directory location already exists and is not a directory: $builddir"
+mkdir -p "$builddir" || die "unable to create build directory: $builddir"
+
+trap 'echo ^C; exit' INT
+main "$@"
+
