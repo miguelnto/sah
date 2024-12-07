@@ -10,7 +10,7 @@ typeset -r auraddr='https://aur.archlinux.org'
 
 typeset auronly noconf noview
 
-SLA="Operations:
+HELP="Operations:
 -i - Install packages.
 -u - Update packages.
 -s - Search for packages.
@@ -26,7 +26,7 @@ VERSION="0.1"
 # show the manpage or version.
 use()
 { 
-    { [[ $1 == 'v' ]] && printf "sah - Simple AUR Helper version %s\n" "$VERSION"; } || printf "%b\n" "$SLA" 
+    { [[ $1 == 'v' ]] && printf "sah - Simple AUR Helper version %s\n" "$VERSION"; } || printf "%b\n" "$HELP" 
 }
 
 # print colour $1 :: then message $2 in bold, usage: msg color text

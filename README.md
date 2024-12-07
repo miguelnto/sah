@@ -1,6 +1,6 @@
 # sah - Simple AUR Helper
 
-Sah is a bash script that aids with searching, installing, and updating AUR packages. It is **not** a package manager, it's just an AUR helper, like yay. 
+Sah is a bash script that aids with the process of searching, installing, and updating AUR packages. It is **not** a package manager, it's an AUR helper, like yay. 
 
 AUR Packages are user produced content, so use the provided files at your own risk. Sah does not allow running as root.
 
@@ -10,32 +10,29 @@ By default, the build directory for packages installed with `sah` is located at 
 
 ## Features
 
-- Minimal requirements.
+- Minimal dependencies.
 - Fast update checking.
 - Search for packages matching a query.
 - Optionally view and confirm the PKGBUILD for each package.
 - Handles dependency chains including other AUR packages.
 - Import and locally trust PGP keys required for signed AUR packages.
 
-## Requirements
+## Dependencies
 
-- bash shell
-- curl
-- su  
-- git
-- sudo or doas
-
-`git` and `sudo/doas` are optional, but recommended.
+- Bash 
+- Curl
+- Git
+- Sudo/doas/su
 
 ## Installation
 
-You can simply install the script by running: *(as root, if needed)*
+Install **sah** by running: *(as root)*
 
 ```
 make install
 ```
 
-To uninstall, run: *(as root, if needed)*
+To uninstall, run: *(as root)*
 
 ```
 make uninstall
@@ -72,9 +69,9 @@ sah -uaN
 
 ## TODO
 
-- Fix some stuff that shellcheck is complaining about
+- Fix some stuff that shellcheck is complaining about.
 
 ## Credits
 
-Sah is a fork of [baph](https://bitbucket.org/natemaia/baph). As that didn't seem hugely maintained and the quality of the code could be improved, I decided to create this program. 
+Sah is a fork of [baph](https://bitbucket.org/natemaia/baph). As that didn't seem hugely maintained and the quality of the code could be improved, I decided to create this fork. 
 
